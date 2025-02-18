@@ -32,7 +32,7 @@ class HypothesisBuffer:
         """
         # Apply the offset to each token.
         new_tokens = [token.with_offset(offset) for token in new_tokens]
-        # Only keep tokens that are roughly “new”
+        # Only keep tokens that are roughly "new"
         self.new = [token for token in new_tokens if token.start > self.last_committed_time - 0.1]
 
         if self.new:
@@ -326,7 +326,12 @@ class VACOnlineASRProcessor:
 
         # Load a VAD model (e.g. Silero VAD)
         import torch
-        model, _ = torch.hub.load(repo_or_dir="snakers4/silero-vad", model="silero_vad")
+        try:
+            model, _ = torch.hub.load(repo_or_dir="snakers4/silero-vad", model="silero_vad", trust_repo=True, source='local')
+        except Exception as e:
+            print(f"Trying to load from cache after error: {e}")
+            model, _ = torch.hub.load(repo_or_dir="snakers4/silero-vad", model="silero_vad", trust_repo=True)
+        
         from src.whisper_streaming.silero_vad_iterator import FixedVADIterator
 
         self.vac = FixedVADIterator(model)

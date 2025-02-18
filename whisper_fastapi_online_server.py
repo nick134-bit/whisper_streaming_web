@@ -47,12 +47,12 @@ def setup_logging():
             'uvicorn.access': {
                 'level': 'INFO',
             },
-            'src.whisper_streaming.online_asr': {  # Add your specific module here
+            'src.whisper_streaming.online_asr': {  
                 'handlers': ['console'],
                 'level': 'DEBUG',
                 'propagate': False,
             },
-            'src.whisper_streaming.whisper_streaming': {  # Add your specific module here
+            'src.whisper_streaming.whisper_streaming': { 
                 'handlers': ['console'],
                 'level': 'DEBUG',
                 'propagate': False,
@@ -79,6 +79,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add WebSocket configuration for lower latency
+app.websocket_route_class = WebSocket
+app.websocket_route_class.max_message_size = 1024 * 1024  # 1MB
+app.websocket_route_class.timeout = 10.0  # 10 seconds timeout
 
 parser = argparse.ArgumentParser(description="Whisper FastAPI Online Server")
 parser.add_argument(
@@ -114,20 +118,11 @@ if args.diarization:
     from src.diarization.diarization_online import DiartDiarization
 
 
-# Load demo HTML for the root endpoint
-with open("src/web/live_transcription.html", "r", encoding="utf-8") as f:
-    html = f.read()
-
-
-@app.get("/")
-async def get():
-    return HTMLResponse(html)
-
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
-SAMPLES_PER_SEC = SAMPLE_RATE * int(args.min_chunk_size)
-BYTES_PER_SAMPLE = 2  # s16le = 2 bytes per sample
+SAMPLES_PER_SEC = SAMPLE_RATE * 0.25  
+BYTES_PER_SAMPLE = 2 
 BYTES_PER_SEC = SAMPLES_PER_SEC * BYTES_PER_SAMPLE
 
 
@@ -179,22 +174,21 @@ async def websocket_endpoint(websocket: WebSocket):
                 elapsed_time = int(time() - beg)
                 beg = time()
                 chunk = await loop.run_in_executor(
-                    None, ffmpeg_process.stdout.read, 32000 * elapsed_time
+                    None, ffmpeg_process.stdout.read, 16000 * elapsed_time 
                 )
                 if (
                     not chunk
-                ):  # The first chunk will be almost empty, FFmpeg is still starting up
+                ):  
                     chunk = await loop.run_in_executor(
-                        None, ffmpeg_process.stdout.read, 4096
+                        None, ffmpeg_process.stdout.read, 2048 
                     )
-                    if not chunk:  # FFmpeg might have closed
+                    if not chunk: 
                         print("FFmpeg stdout closed.")
                         break
 
                 pcm_buffer.extend(chunk)
 
-                if len(pcm_buffer) >= BYTES_PER_SEC:
-                    # Convert int16 -> float32
+                if len(pcm_buffer) >= BYTES_PER_SEC * 0.25:  #
                     pcm_array = (
                         np.frombuffer(pcm_buffer, dtype=np.int16).astype(np.float32)
                         / 32768.0
@@ -293,6 +287,6 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "whisper_fastapi_online_server:app", host=args.host, port=args.port, reload=True,
+        "whisper_fastapi_online_server:app", host=args.host, port=args.port, reload=False,
         log_level="info"
     )

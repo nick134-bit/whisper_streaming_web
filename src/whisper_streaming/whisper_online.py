@@ -77,7 +77,7 @@ def add_shared_args(parser):
     parser.add_argument(
         "--model",
         type=str,
-        default="large-v3-turbo",
+        default="base",
         choices="tiny.en,tiny,base.en,base,small.en,small,medium.en,medium,large-v1,large-v2,large-v3,large,large-v3-turbo".split(
             ","
         ),
@@ -119,7 +119,7 @@ def add_shared_args(parser):
     parser.add_argument(
         "--vac",
         action="store_true",
-        default=False,
+        default=True,
         help="Use VAC = voice activity controller. Recommended. Requires torch.",
     )
     parser.add_argument(

@@ -115,11 +115,17 @@
   <div id="linesTranscript"></div>
 
   <script>
+    // Check if we're in a secure context (needed for getUserMedia)
+    if (!window.isSecureContext) {
+      alert("This page must be served over HTTPS or from localhost for microphone access to work.");
+      document.getElementById("recordButton").disabled = true;
+    }
+
     let isRecording = false;
     let websocket = null;
     let recorder = null;
     let chunkDuration = 1000;
-    let websocketUrl = "ws://localhost:8000/asr";
+    let websocketUrl = `ws://${window.location.hostname}:8000/asr`;
     let userClosing = false;
 
     const statusText = document.getElementById("status");
@@ -127,6 +133,9 @@
     const chunkSelector = document.getElementById("chunkSelector");
     const websocketInput = document.getElementById("websocketInput");
     const linesTranscriptDiv = document.getElementById("linesTranscript");
+
+    // Set the initial value of the websocket input
+    websocketInput.value = websocketUrl;
 
     chunkSelector.addEventListener("change", () => {
       chunkDuration = parseInt(chunkSelector.value);
@@ -145,49 +154,47 @@
     function setupWebSocket() {
       return new Promise((resolve, reject) => {
         try {
+          console.log("Connecting to WebSocket:", websocketUrl);
           websocket = new WebSocket(websocketUrl);
         } catch (error) {
+          console.error("WebSocket creation error:", error);
           statusText.textContent = "Invalid WebSocket URL. Please check and try again.";
           reject(error);
           return;
         }
 
         websocket.onopen = () => {
+          console.log("WebSocket connection opened");
           statusText.textContent = "Connected to server.";
           resolve();
         };
 
-        websocket.onclose = () => {
+        websocket.onclose = (event) => {
+          console.log("WebSocket closed:", event.code, event.reason);
           if (userClosing) {
             statusText.textContent = "WebSocket closed by user.";
           } else {
             statusText.textContent =
-              "Disconnected from the WebSocket server. (Check logs if model is loading.)";
+              "Disconnected from the WebSocket server. Code: " + event.code;
           }
           userClosing = false;
         };
 
-        websocket.onerror = () => {
-          statusText.textContent = "Error connecting to WebSocket.";
+        websocket.onerror = (error) => {
+          console.error("WebSocket error:", error);
+          statusText.textContent = "Error connecting to WebSocket: " + error;
           reject(new Error("Error connecting to WebSocket"));
         };
 
-        // Handle messages from server
         websocket.onmessage = (event) => {
-          const data = JSON.parse(event.data);
-          /*
-            The server might send:
-            {
-              "lines": [
-                {"speaker": 0, "text": "Hello."},
-                {"speaker": 1, "text": "Bonjour."},
-                ...
-              ],
-              "buffer": "..."
-            }
-          */
-          const { lines = [], buffer = "" } = data;
-          renderLinesWithBuffer(lines, buffer);
+          console.log("Received message:", event.data.slice(0, 100) + "...");
+          try {
+            const data = JSON.parse(event.data);
+            const { lines = [], buffer = "" } = data;
+            renderLinesWithBuffer(lines, buffer);
+          } catch (error) {
+            console.error("Error processing message:", error);
+          }
         };
       });
     }
@@ -213,18 +220,76 @@
 
     async function startRecording() {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+        console.log("Checking media devices support...");
+        
+        // Check if mediaDevices is supported
+        if (!navigator.mediaDevices) {
+          // Old browser compatibility
+          navigator.mediaDevices = {};
+        }
+
+        // Some browsers implement getUserMedia differently
+        if (!navigator.mediaDevices.getUserMedia) {
+          navigator.mediaDevices.getUserMedia = function(constraints) {
+            const getUserMedia = navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
+            
+            if (!getUserMedia) {
+              return Promise.reject(new Error("getUserMedia is not supported in this browser"));
+            }
+
+            return new Promise(function(resolve, reject) {
+              getUserMedia.call(navigator, constraints, resolve, reject);
+            });
+          }
+        }
+
+        console.log("Requesting microphone access...");
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            sampleRate: 16000
+          } 
+        });
+        console.log("Microphone access granted");
+        
+        // Check if MediaRecorder is supported
+        if (!window.MediaRecorder) {
+          throw new Error("MediaRecorder is not supported in this browser");
+        }
+        
+        recorder = new MediaRecorder(stream, { 
+          mimeType: "audio/webm",
+          audioBitsPerSecond: 128000 
+        });
+        
+        console.log("MediaRecorder created with settings:", recorder.audioBitsPerSecond);
+        
         recorder.ondataavailable = (e) => {
+          console.log("Data available:", e.data.size, "bytes");
           if (websocket && websocket.readyState === WebSocket.OPEN) {
             websocket.send(e.data);
+          } else {
+            console.error("WebSocket not ready:", websocket ? websocket.readyState : "null");
           }
         };
+        
+        recorder.onerror = (e) => {
+          console.error("MediaRecorder error:", e);
+          statusText.textContent = "Recording error: " + e.message;
+        };
+        
         recorder.start(chunkDuration);
+        console.log("Recording started with chunk duration:", chunkDuration);
+        
         isRecording = true;
         updateUI();
       } catch (err) {
-        statusText.textContent = "Error accessing microphone. Please allow microphone access.";
+        console.error("Error in startRecording:", err);
+        statusText.textContent = "Error accessing microphone: " + err.message;
+        if (!navigator.mediaDevices) {
+          statusText.textContent += " (MediaDevices API not supported in this browser)";
+        }
       }
     }
 
@@ -248,10 +313,12 @@
       if (!isRecording) {
         linesTranscriptDiv.innerHTML = "";
         try {
+          console.log("Starting recording process...");
           await setupWebSocket();
           await startRecording();
         } catch (err) {
-          statusText.textContent = "Could not connect to WebSocket or access mic. Aborted.";
+          console.error("Error in toggleRecording:", err);
+          statusText.textContent = "Error: " + err.message;
         }
       } else {
         stopRecording();
