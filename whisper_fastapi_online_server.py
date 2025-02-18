@@ -8,6 +8,7 @@ from time import time
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+import json
 
 from src.whisper_streaming.whisper_online import backend_factory, online_factory, add_shared_args
 
@@ -126,13 +127,34 @@ BYTES_PER_SAMPLE = 2
 BYTES_PER_SEC = SAMPLES_PER_SEC * BYTES_PER_SAMPLE
 
 
-async def start_ffmpeg_decoder():
+async def start_ffmpeg_decoder(content_type):
     """
-    Start an FFmpeg process in async streaming mode that reads WebM from stdin
-    and outputs raw s16le PCM on stdout. Returns the process object.
+    Start an FFmpeg process in async streaming mode that reads audio from stdin
+    and outputs raw s16le PCM on stdout. 
+    
+    Args:
+        content_type (str): Content type of the incoming audio (e.g., 'audio/webm', 'audio/mp4')
+    Returns:
+        Process object
     """
+    # Map content types to ffmpeg input formats
+    format_mapping = {
+        'audio/webm': 'webm',
+        'audio/mp4': 'mp4',
+        'audio/ogg': 'ogg',
+        'audio/wav': 'wav',
+        'audio/x-wav': 'wav',
+        'audio/mpeg': 'mp3',
+    }
+    
+    input_format = format_mapping.get(content_type)
+    if not input_format:
+        raise ValueError(f"Unsupported content type: {content_type}")
+        
+    logger.info(f"Using FFmpeg decoder for format: {input_format}")
+    
     process = (
-        ffmpeg.input("pipe:0", format="webm")
+        ffmpeg.input("pipe:0", format=input_format)
         .output(
             "pipe:1",
             format="s16le",
@@ -149,13 +171,32 @@ async def start_ffmpeg_decoder():
 @app.websocket("/asr")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("WebSocket connection opened.")
+    logger.info("WebSocket connection opened.")
+    
+    # Wait for the client to send the content type
+    try:
+        message = await websocket.receive_text()
+        content_type = json.loads(message).get('content_type')
+        if not content_type:
+            await websocket.close(code=1003, reason="Content type not specified")
+            return
+        logger.info(f"Received content type: {content_type}")
+    except Exception as e:
+        logger.error(f"Error receiving content type: {e}")
+        await websocket.close(code=1003, reason="Invalid content type message")
+        return
 
-    ffmpeg_process = await start_ffmpeg_decoder()
+    try:
+        ffmpeg_process = await start_ffmpeg_decoder(content_type)
+    except ValueError as e:
+        logger.error(f"Decoder error: {e}")
+        await websocket.close(code=1003, reason=str(e))
+        return
+
     pcm_buffer = bytearray()
-    print("Loading online.")
+    logger.info("Loading online transcription model.")
     online = online_factory(args, asr, tokenizer)
-    print("Online loaded.")
+    logger.info("Online transcription model loaded.")
 
     if args.diarization:
         diarization = DiartDiarization(SAMPLE_RATE)
